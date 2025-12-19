@@ -3,6 +3,7 @@ import { View, Text, TouchableOpacity, TextInput, Image, FlatList, KeyboardAvoid
 import { Ionicons } from '@expo/vector-icons';
 import { styles, THEME } from './styles';
 import { socket } from './config';
+import { Audio } from 'expo-av';
 
 export const ButtonPrimary = ({ texto, onPress, style, disabled }) => (
     <TouchableOpacity style={[styles.btnPrimary, style, disabled && {opacity: 0.6}]} onPress={onPress} disabled={disabled}>
@@ -67,9 +68,68 @@ export const ImagemSegura = ({ uri, onZoom, style }) => {
     );
 };
 
-export const TelaChat = ({ contato, msgs, onVoltar, onEnviar, onFotoCamera, onFotoGaleria, onZoom, onVerPerfil, onDenunciar, contatoOnline }) => {
+export const AudioBubble = ({ uri, isEu }) => {
+    const [sound, setSound] = useState();
+    const [isPlaying, setIsPlaying] = useState(false);
+
+    async function playSound() {
+        if (sound) {
+            // Se já tiver som carregado, apenas toca ou pausa
+            if (isPlaying) {
+                await sound.pauseAsync();
+                setIsPlaying(false);
+            } else {
+                await sound.playAsync();
+                setIsPlaying(true);
+            }
+        } else {
+            // Carrega o som da internet
+            const { sound: newSound } = await Audio.Sound.createAsync(
+                { uri },
+                { shouldPlay: true } // Já começa tocando
+            );
+            setSound(newSound);
+            setIsPlaying(true);
+            
+            // Quando o áudio acabar, reseta o botão
+            newSound.setOnPlaybackStatusUpdate((status) => {
+                if (status.didJustFinish) {
+                    setIsPlaying(false);
+                    newSound.stopAsync(); // O SEGREDO ESTÁ AQUI: Pare o som completamente para resetar o estado
+                }
+            });
+        }
+    }
+
+    // Limpa a memória quando o componente sumir da tela
+    useEffect(() => {
+        return () => {
+            if (sound) sound.unloadAsync();
+        };
+    }, [sound]);
+
+    return (
+        <View style={{ flexDirection: 'row', alignItems: 'center', minWidth: 100 }}>
+            <TouchableOpacity onPress={playSound} style={{ padding: 10 }}>
+                <Ionicons 
+                    name={isPlaying ? "pause" : "play"} 
+                    size={24} 
+                    color={isEu ? "#fff" : "#333"} 
+                />
+            </TouchableOpacity>
+            <Text style={{ color: isEu ? "#eee" : "#666", fontSize: 12 }}>
+                {isPlaying ? "Reproduzindo..." : "Áudio"}
+            </Text>
+        </View>
+    );
+};
+
+export const TelaChat = ({ contato, msgs, onVoltar, onEnviar, onFotoCamera, onFotoGaleria, onZoom, onVerPerfil, onDenunciar, contatoOnline, onStartRecord, onStopRecord, isRecording, audioLevel, onCancelRecord }) => {
   const [txt, setTxt] = useState('');
   const flatListRef = useRef(null);
+
+  // CORREÇÃO DA ORDEM: Ordena da mais recente para a mais antiga
+  const msgsOrdenadas = [...msgs].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
   useEffect(() => {
      if(msgs.length > 0) {
@@ -107,7 +167,7 @@ export const TelaChat = ({ contato, msgs, onVoltar, onEnviar, onFotoCamera, onFo
 
       <FlatList
         ref={flatListRef} 
-        data={msgs} 
+        data={msgsOrdenadas} 
         keyExtractor={item => item.id}
         inverted // LISTA INVERTIDA
         contentContainerStyle={{paddingVertical: 15}}
@@ -124,7 +184,11 @@ export const TelaChat = ({ contato, msgs, onVoltar, onEnviar, onFotoCamera, onFo
                          {/* CHAMANDO O SELO AQUI */}
                          {renderOrigem(item.origin)}
                      </View>
-                 ) : <Text style={[styles.msgText, isEu ? {color:'white'} : {color: THEME.text}]}>{item.content}</Text>}
+                 ) : item.type === 'audio' ? (
+                     <AudioBubble uri={item.content} isEu={isEu} />
+                 ) : (
+                     <Text style={[styles.msgText, isEu ? {color:'white'} : {color: THEME.text}]}>{item.content}</Text>
+                 )}
                  
                  <View style={styles.msgMeta}>
                      <Text style={[styles.msgTime, isEu ? {color:'rgba(255,255,255,0.7)'} : {color:'#999'}]}>
@@ -140,10 +204,44 @@ export const TelaChat = ({ contato, msgs, onVoltar, onEnviar, onFotoCamera, onFo
       
       {!contato.banido && (
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.inputArea}>
-             <TouchableOpacity onPress={onFotoGaleria} style={{padding:10}}><Ionicons name="images" size={24} color={THEME.primary}/></TouchableOpacity>
-             <TouchableOpacity onPress={onFotoCamera} style={{padding:10}}><Ionicons name="camera" size={24} color={THEME.primary}/></TouchableOpacity>
-             <TextInput style={styles.inputChat} value={txt} onChangeText={setTxt} placeholder="Mensagem..." multiline/>
-             <TouchableOpacity onPress={() => { onEnviar(txt); setTxt(''); }} style={{backgroundColor:THEME.primary, width:45, height:45, borderRadius:23, alignItems:'center', justifyContent:'center'}}><Ionicons name="send" size={20} color="white" /></TouchableOpacity>
+             {isRecording ? (
+                <View style={{flexDirection:'row', alignItems:'center', flex:1, paddingHorizontal: 10}}>
+                   {/* Animação Visual da Voz */}
+                   <View style={{flex:1, height: 40, backgroundColor: '#ffebee', borderRadius: 20, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 15, marginRight: 10}}>
+                       <Ionicons name="mic" size={20} color="red" style={{marginRight: 10}} />
+                       <Text style={{color: 'red', marginRight: 10}}>Gravando...</Text>
+                       <View style={{
+                           height: 10, 
+                           width: `${Math.max(5, Math.min(audioLevel || 0, 100))}%`, 
+                           backgroundColor: 'red', 
+                           borderRadius: 5
+                       }} />
+                   </View>
+
+                   {/* Botão Cancelar */}
+                   <TouchableOpacity onPress={onCancelRecord} style={{padding: 10, marginRight: 5}}>
+                       <Ionicons name="trash-outline" size={28} color="#666" />
+                   </TouchableOpacity>
+
+                   {/* Botão Enviar */}
+                   <TouchableOpacity onPress={onStopRecord} style={{backgroundColor:THEME.primary, width:45, height:45, borderRadius:23, alignItems:'center', justifyContent:'center'}}>
+                       <Ionicons name="arrow-up" size={24} color="white" />
+                   </TouchableOpacity>
+                </View>
+             ) : (
+                 <>
+                    <TouchableOpacity onPress={onFotoGaleria} style={{padding:10}}><Ionicons name="images" size={24} color={THEME.primary}/></TouchableOpacity>
+                    <TouchableOpacity onPress={onFotoCamera} style={{padding:10}}><Ionicons name="camera" size={24} color={THEME.primary}/></TouchableOpacity>
+                    <TextInput style={styles.inputChat} value={txt} onChangeText={setTxt} placeholder="Mensagem..." multiline/>
+                    {txt.length > 0 ? (
+                        <TouchableOpacity onPress={() => { onEnviar(txt); setTxt(''); }} style={{backgroundColor:THEME.primary, width:45, height:45, borderRadius:23, alignItems:'center', justifyContent:'center'}}><Ionicons name="send" size={20} color="white" /></TouchableOpacity>
+                    ) : (
+                        <TouchableOpacity onPress={onStartRecord} style={{padding:10}}>
+                           <Ionicons name="mic" size={24} color={THEME.primary}/>
+                        </TouchableOpacity>
+                    )}
+                 </>
+             )}
           </KeyboardAvoidingView>
       )}
     </View>
