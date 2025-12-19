@@ -6,6 +6,7 @@ import { useChat } from '../contexts/ChatContext';
 import { TelaChat, Badge, ButtonPrimary } from '../components';
 import * as ImagePicker from 'expo-image-picker';
 import { styles, THEME } from '../styles';
+import { Audio } from 'expo-av';
 
 export function ChatScreen({ navigation }) {
     const [zoomVisible, setZoomVisible] = useState(false);
@@ -13,6 +14,9 @@ export function ChatScreen({ navigation }) {
     const [modalPerfilVisible, setModalPerfilVisible] = useState(false);
     const [enviandoImagem, setEnviandoImagem] = useState(false);
     const [zoomImages, setZoomImages] = useState([]); // ADICIONADO PARA O ZOOM FUNCIONAR DO MODAL
+    const [recording, setRecording] = useState(null);
+    const [isRecording, setIsRecording] = useState(false);
+    const [audioLevel, setAudioLevel] = useState(0);
 
     const { chatAtivo, mensagensPorSala, enviarMsg, todosPerfis, socket, setChatAtivo, minhaListaBloqueio, bloquear } = useChat();
 
@@ -28,6 +32,86 @@ export function ChatScreen({ navigation }) {
             let json = await response.json(); return json.secure_url;
         } catch (error) { return null; }
     };
+
+    const uploadAudioParaCloudinary = async (audioUri) => {
+        const CLOUD_NAME = "dsdvqwwp6"; const UPLOAD_PRESET = "Randochat"; 
+        const data = new FormData();
+        let filename = audioUri.split('/').pop();
+        // Cloudinary precisa de resource_type: 'video' para áudios na maioria dos casos
+        data.append('file', { uri: audioUri, name: filename, type: 'audio/m4a' }); 
+        data.append('upload_preset', UPLOAD_PRESET);
+        data.append('resource_type', 'video'); 
+        try {
+            let response = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/video/upload`, { method: 'POST', body: data });
+            let json = await response.json(); return json.secure_url;
+        } catch (error) { return null; }
+    };
+
+    async function startRecording() {
+        try {
+            const permission = await Audio.requestPermissionsAsync();
+            if (permission.status !== 'granted') {
+                Alert.alert("Permissão", "Precisamos de acesso ao microfone para gravar áudio.");
+                return;
+            }
+            
+            // Configura o modo de áudio no sistema
+            await Audio.setAudioModeAsync({ 
+                allowsRecordingIOS: true, 
+                playsInSilentModeIOS: true 
+            });
+            
+            const newRecording = new Audio.Recording();
+            
+            // AQUI ESTAVA O ERRO: Mudamos para Audio.RecordingOptionsPresets.HIGH_QUALITY
+            await newRecording.prepareToRecordAsync({
+                ...Audio.RecordingOptionsPresets.HIGH_QUALITY,
+                isMeteringEnabled: true,
+            });
+
+            newRecording.setOnRecordingStatusUpdate((status) => {
+                if (status.isRecording) {
+                    const level = status.metering; 
+                    // Normalização do volume para a barrinha visual (apenas cosmético)
+                    const visualLevel = Math.max(0, (160 + level) / 1.6); 
+                    setAudioLevel(visualLevel);
+                }
+            });
+
+            await newRecording.startAsync();
+            setRecording(newRecording);
+            setIsRecording(true);
+        } catch (err) {
+            console.error('Falha ao gravar', err);
+            Alert.alert("Erro", "Não foi possível iniciar a gravação.");
+        }
+    }
+
+    async function cancelRecording() {
+        if (!recording) return;
+        setIsRecording(false);
+        setAudioLevel(0);
+        try {
+            await recording.stopAndUnloadAsync(); // Para
+            setRecording(null); 
+        } catch (error) { console.error(error); }
+    }
+
+    async function stopAndSendRecording() {
+        if (!recording) return;
+        setIsRecording(false);
+        try {
+            await recording.stopAndUnloadAsync();
+            const uri = recording.getURI();
+            setRecording(null);
+            
+            // Envia o áudio
+            const audioUrl = await uploadAudioParaCloudinary(uri);
+            if (audioUrl) {
+                enviarMsg(audioUrl, 'audio', 'mic');
+            }
+        } catch (error) { console.error(error); }
+    }
 
     const handleZoom = (item) => { setFotoSelecionada(item); setZoomVisible(true); };
 
@@ -142,6 +226,11 @@ export function ChatScreen({ navigation }) {
                 onVerPerfil={() => setModalPerfilVisible(true)}
                 onDenunciar={() => Alert.alert("Denúncia", "Reportado.")}
                 contatoOnline={todosPerfis.find(p=>p.nick===chatAtivo.nick)?.online}
+                onStartRecord={startRecording}
+                onStopRecord={stopAndSendRecording}
+                isRecording={isRecording}
+                audioLevel={audioLevel}
+                onCancelRecord={cancelRecording}
             />
         </View>
     );
