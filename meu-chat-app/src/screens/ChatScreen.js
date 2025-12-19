@@ -1,22 +1,22 @@
 import React, { useState, useEffect } from 'react';
-import { View, Alert, Modal, ScrollView, Text, TouchableOpacity, Image, ActivityIndicator } from 'react-native';
-import ImageViewing from "react-native-image-viewing";
+import { View, Alert, Modal, ScrollView, Text, TouchableOpacity, Image, ActivityIndicator, TouchableWithoutFeedback } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useChat } from '../contexts/ChatContext';
-import { TelaChat, Badge, ButtonPrimary } from '../components';
+import { TelaChat, Badge, ButtonPrimary, MediaViewer } from '../components';
 import * as ImagePicker from 'expo-image-picker';
 import { styles, THEME } from '../styles';
-import { Audio } from 'expo-av';
+import { Audio, Video, ResizeMode } from 'expo-av';
 
 export function ChatScreen({ navigation }) {
-    const [zoomVisible, setZoomVisible] = useState(false);
-    const [fotoSelecionada, setFotoSelecionada] = useState(null);
     const [modalPerfilVisible, setModalPerfilVisible] = useState(false);
     const [enviandoImagem, setEnviandoImagem] = useState(false);
-    const [zoomImages, setZoomImages] = useState([]); // ADICIONADO PARA O ZOOM FUNCIONAR DO MODAL
     const [recording, setRecording] = useState(null);
     const [isRecording, setIsRecording] = useState(false);
     const [audioLevel, setAudioLevel] = useState(0);
+    const [recordingDuration, setRecordingDuration] = useState(0);
+    const [timerRef, setTimerRef] = useState(null);
+    const [menuAnexosVisible, setMenuAnexosVisible] = useState(false);
+    const [midiaZoom, setMidiaZoom] = useState(null); // Guarda o OBJETO da mídia (foto ou video) para abrir
 
     const { chatAtivo, mensagensPorSala, enviarMsg, todosPerfis, socket, setChatAtivo, minhaListaBloqueio, bloquear } = useChat();
 
@@ -45,6 +45,36 @@ export function ChatScreen({ navigation }) {
             let response = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/video/upload`, { method: 'POST', body: data });
             let json = await response.json(); return json.secure_url;
         } catch (error) { return null; }
+    };
+
+    const uploadVideoParaCloudinary = async (videoUri) => {
+        const CLOUD_NAME = "dsdvqwwp6"; 
+        const UPLOAD_PRESET = "Randochat"; 
+        
+        const data = new FormData();
+        // Pega o nome do arquivo
+        let filename = videoUri.split('/').pop();
+        
+        // Configura para envio de vídeo
+        data.append('file', { 
+            uri: videoUri, 
+            name: filename, 
+            type: 'video/mp4' // Geralmente gravam em mp4
+        }); 
+        data.append('upload_preset', UPLOAD_PRESET);
+        data.append('resource_type', 'video'); // Importante!
+        
+        try {
+            let response = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/video/upload`, { 
+                method: 'POST', 
+                body: data 
+            });
+            let json = await response.json(); 
+            return json.secure_url;
+        } catch (error) { 
+            console.error("Erro upload video", error);
+            return null; 
+        }
     };
 
     async function startRecording() {
@@ -78,6 +108,13 @@ export function ChatScreen({ navigation }) {
                 }
             });
 
+            // Zera o contador e inicia
+            setRecordingDuration(0);
+            const timer = setInterval(() => {
+                setRecordingDuration(prev => prev + 1);
+            }, 1000);
+            setTimerRef(timer);
+
             await newRecording.startAsync();
             setRecording(newRecording);
             setIsRecording(true);
@@ -87,7 +124,14 @@ export function ChatScreen({ navigation }) {
         }
     }
 
+    const stopTimer = () => {
+        if (timerRef) clearInterval(timerRef);
+        setTimerRef(null);
+        setRecordingDuration(0);
+    };
+
     async function cancelRecording() {
+        stopTimer();
         if (!recording) return;
         setIsRecording(false);
         setAudioLevel(0);
@@ -98,6 +142,7 @@ export function ChatScreen({ navigation }) {
     }
 
     async function stopAndSendRecording() {
+        stopTimer();
         if (!recording) return;
         setIsRecording(false);
         try {
@@ -113,19 +158,9 @@ export function ChatScreen({ navigation }) {
         } catch (error) { console.error(error); }
     }
 
-    const handleZoom = (item) => { setFotoSelecionada(item); setZoomVisible(true); };
-
-    const RenderFooter = () => {
-        if (!fotoSelecionada || !fotoSelecionada.origin) return null;
-        const isCamera = fotoSelecionada.origin === 'camera';
-        return (
-            <View style={{ paddingBottom: 60, alignItems: 'center' }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.8)', padding: 12, borderRadius: 25 }}>
-                    <Ionicons name={isCamera ? "camera" : "image"} size={20} color={isCamera ? "#00C853" : "#007AFF"} />
-                    <Text style={{ color: 'white', marginLeft: 10, fontWeight: 'bold' }}>{isCamera ? "Foto Tirada Ao Vivo" : "Foto da Galeria"}</Text>
-                </View>
-            </View>
-        );
+    // 2. Função unificada para abrir qualquer coisa
+    const handleAbrirMidia = (item) => {
+        setMidiaZoom(item); // Abre o nosso MediaViewer
     };
 
     const handleVoltar = () => {
@@ -155,8 +190,7 @@ export function ChatScreen({ navigation }) {
                                     <ScrollView horizontal pagingEnabled showsHorizontalScrollIndicator={false} style={styles.carouselContainer}>
                                         {fotosValidas.map((f, i) => (
                                              <TouchableOpacity key={i} activeOpacity={0.9} onPress={() => { 
-                                                 setFotoSelecionada({ content: f, origin: 'gallery' }); // Adaptação para o zoom funcionar
-                                                 setZoomVisible(true); 
+                                                 setMidiaZoom({ content: f, origin: 'gallery', type: 'image' });
                                              }}>
                                                 <Image source={{ uri: f }} style={styles.carouselImage} />
                                              </TouchableOpacity>
@@ -206,6 +240,107 @@ export function ChatScreen({ navigation }) {
         }
     };
 
+    // 2. Mude a função escolherOrigemVideo para apenas abrir o menu
+    const abrirMenuVideo = () => {
+        setMenuAnexosVisible(true);
+    };
+
+    // 3. Função auxiliar para selecionar e fechar o menu
+    const selecionarOrigem = (origem) => {
+        setMenuAnexosVisible(false); // Fecha o menu
+        setTimeout(() => {
+            enviarVideo(origem); // Chama a função de envio após fechar
+        }, 500); // Um pequeno delay para a animação fluir
+    };
+
+    const enviarVideo = async (origem) => {
+        // Configuração para aceitar VÍDEOS
+        const config = { 
+            mediaTypes: ImagePicker.MediaTypeOptions.Videos, // <--- O segredo está aqui
+            allowsEditing: true, 
+            quality: 0.5, // Vídeo pesa muito, melhor reduzir a qualidade
+            videoMaxDuration: 60, // Limite de 60 segundos (opcional)
+        };
+
+        let r;
+        if (origem === 'camera') {
+            r = await ImagePicker.launchCameraAsync(config);
+        } else {
+            r = await ImagePicker.launchImageLibraryAsync(config);
+        }
+
+        if (!r.canceled) {
+            setEnviandoImagem(true); // Reutilizando seu loading visual
+            try {
+                const videoUrl = await uploadVideoParaCloudinary(r.assets[0].uri);
+                if (videoUrl) {
+                    // Envia como tipo 'video'
+                    enviarMsg(videoUrl, 'video', origem);
+                }
+            } catch (e) {
+                Alert.alert("Erro", "Falha ao enviar vídeo");
+            }
+            setEnviandoImagem(false);
+        }
+    };
+
+    // 4. Crie o Componente Visual do Menu (Coloque antes do return)
+    const RenderMenuAnexos = () => {
+        return (
+            <Modal
+                visible={menuAnexosVisible}
+                transparent={true}
+                animationType="slide"
+                onRequestClose={() => setMenuAnexosVisible(false)}
+            >
+                {/* Fundo escuro que fecha ao tocar */}
+                <TouchableOpacity 
+                    style={{flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end'}} 
+                    activeOpacity={1} 
+                    onPress={() => setMenuAnexosVisible(false)}
+                >
+                    {/* O Painel Branco (Bottom Sheet) */}
+                    <View style={{backgroundColor: 'white', borderTopLeftRadius: 25, borderTopRightRadius: 25, padding: 20, paddingBottom: 40}}>
+                        
+                        {/* Barrinha cinza para indicar que puxa */}
+                        <View style={{alignSelf:'center', width: 40, height: 5, backgroundColor:'#ccc', borderRadius:10, marginBottom: 20}}/>
+                        
+                        <Text style={{fontSize: 18, fontWeight: 'bold', marginBottom: 20, color: '#333'}}>Enviar Vídeo</Text>
+
+                        {/* Opção 1: Câmera */}
+                        <TouchableOpacity 
+                            onPress={() => selecionarOrigem('camera')}
+                            style={{flexDirection: 'row', alignItems: 'center', paddingVertical: 15, borderBottomWidth: 1, borderBottomColor: '#f0f0f0'}}
+                        >
+                            <View style={{width: 50, height: 50, borderRadius: 25, backgroundColor: '#ffebee', alignItems: 'center', justifyContent: 'center', marginRight: 15}}>
+                                <Ionicons name="videocam" size={24} color="#e53935" />
+                            </View>
+                            <View>
+                                <Text style={{fontSize: 16, fontWeight: '600', color: '#333'}}>Gravar Vídeo</Text>
+                                <Text style={{fontSize: 12, color: '#999'}}>Usar a câmera agora</Text>
+                            </View>
+                        </TouchableOpacity>
+
+                        {/* Opção 2: Galeria */}
+                        <TouchableOpacity 
+                            onPress={() => selecionarOrigem('gallery')}
+                            style={{flexDirection: 'row', alignItems: 'center', paddingVertical: 15}}
+                        >
+                            <View style={{width: 50, height: 50, borderRadius: 25, backgroundColor: '#e3f2fd', alignItems: 'center', justifyContent: 'center', marginRight: 15}}>
+                                <Ionicons name="images" size={24} color="#1e88e5" />
+                            </View>
+                            <View>
+                                <Text style={{fontSize: 16, fontWeight: '600', color: '#333'}}>Escolher da Galeria</Text>
+                                <Text style={{fontSize: 12, color: '#999'}}>Importar vídeo existente</Text>
+                            </View>
+                        </TouchableOpacity>
+
+                    </View>
+                </TouchableOpacity>
+            </Modal>
+        );
+    };
+
     return (
         <View style={{flex:1, backgroundColor: 'white'}}>
             {enviandoImagem && (
@@ -213,7 +348,15 @@ export function ChatScreen({ navigation }) {
                     <ActivityIndicator size="large" color={THEME.primary} />
                 </View>
             )}
-            <ImageViewing images={fotoSelecionada ? [{ uri: fotoSelecionada.content }] : []} visible={zoomVisible} onRequestClose={() => setZoomVisible(false)} FooterComponent={RenderFooter}/>
+            
+            {/* --- O NOVO PLAYER UNIFICADO --- */}
+            <MediaViewer 
+                visible={!!midiaZoom} 
+                item={midiaZoom} 
+                onClose={() => setMidiaZoom(null)} 
+            />
+
+            <RenderMenuAnexos />
             {renderModalPerfil()}
             <TelaChat 
                 contato={chatAtivo} 
@@ -222,7 +365,11 @@ export function ChatScreen({ navigation }) {
                 onEnviar={enviarMsg}
                 onFotoCamera={() => enviarFoto('camera')}
                 onFotoGaleria={() => enviarFoto('gallery')}
-                onZoom={handleZoom}
+                onVideoCamera={() => enviarVideo('camera')} // Mantido por compatibilidade, mas o botão principal usa o de baixo
+                onVideoGaleria={() => enviarVideo('gallery')} // Mantido por compatibilidade
+                onEnviarVideo={abrirMenuVideo} // Agora chama a função que abre o menu
+                onVideoZoom={handleAbrirMidia} // <--- Usa a nova função unificada
+                onZoom={handleAbrirMidia}      // <--- Usa a nova função unificada
                 onVerPerfil={() => setModalPerfilVisible(true)}
                 onDenunciar={() => Alert.alert("Denúncia", "Reportado.")}
                 contatoOnline={todosPerfis.find(p=>p.nick===chatAtivo.nick)?.online}
@@ -231,6 +378,7 @@ export function ChatScreen({ navigation }) {
                 isRecording={isRecording}
                 audioLevel={audioLevel}
                 onCancelRecord={cancelRecording}
+                recordingDuration={recordingDuration}
             />
         </View>
     );
