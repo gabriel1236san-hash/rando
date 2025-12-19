@@ -1,0 +1,22 @@
+# Node
+node_modules
+npm-debug.log*
+.DS_Store
+
+# Expo / React Native
+.expo/
+*.jks
+*.p12
+*.key
+*.store
+android/
+ios/
+# Ignorar arquivos do frontend no backend
+meu-chat-app/node_modules
+
+# .gitignore (no diretório raiz do projeto)
+
+# ... outras regras ...
+
+# Arquivos de ambiente local
+backend/.env
